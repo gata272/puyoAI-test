@@ -13,7 +13,8 @@ onerror = e => {
 
 // engine.js / ai.js 読み込み
 postMessage({ type: "debug", text: "importScripts 前" });
-importScripts("engine.js", "ai.js");
+importScripts("engine.js");
+importScripts("ai.js");
 postMessage({ type: "debug", text: "importScripts 後" });
 
 onmessage = e => {
