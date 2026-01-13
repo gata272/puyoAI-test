@@ -1,3 +1,5 @@
+postMessage({ type: "debug", text: "engine.js loaded" });
+
 const WIDTH = 6;
 const HEIGHT = 13;
 const COLORS = [1,2,3,4];
