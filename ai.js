@@ -1,3 +1,4 @@
+postMessage({ type: "debug", text: "ai.js loaded" });
 /**
  * PuyoAI ProBuilder v1
  * 上位ぷよらー思考完全反映型
