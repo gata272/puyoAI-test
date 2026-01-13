@@ -1,3 +1,8 @@
+if (msg.type === "error") {
+  log.textContent += "\n❌ Worker Error:\n" + msg.message;
+  runBtn.disabled = false;
+}
+
 let worker = null;
 
 const log = document.getElementById("log");
