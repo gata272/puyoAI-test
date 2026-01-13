@@ -1,8 +1,10 @@
 let worker = null;
+
 const log = document.getElementById("log");
 const runBtn = document.getElementById("run");
 
 runBtn.onclick = () => {
+  // 既存 Worker があれば停止
   if (worker) {
     worker.terminate();
   }
@@ -26,6 +28,7 @@ runBtn.onclick = () => {
       log.textContent += "\n" + msg.text;
     }
 
+    // 全局終了時
     if (msg.type === "progress" && msg.current === msg.total) {
       log.textContent += "\n\n完了";
       runBtn.disabled = false;
