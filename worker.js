@@ -8,12 +8,12 @@ onmessage = e => {
     const c = simulateOneGame();
     maxChains.push(c);
 
-    // 進捗通知
-      postMessage({
-        type: "progress",
-        current: i + 1,
-        total: games
-      });
+    // ★ 進捗通知（毎局）
+    postMessage({
+      type: "progress",
+      current: i + 1,
+      total: games
+    });
   }
 
   const avg =
