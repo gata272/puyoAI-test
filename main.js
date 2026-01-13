@@ -1,3 +1,5 @@
+// ===== main.js =====
+
 let worker = null;
 
 const log = document.getElementById("log");
@@ -14,16 +16,11 @@ runBtn.onclick = () => {
   log.textContent = "計算開始...\n";
   runBtn.disabled = true;
 
-  worker.postMessage({ games: 1000 });
-
   worker.onmessage = e => {
     const msg = e.data;
 
-    // ★ エラー表示（ここでやる）
-    if (msg.type === "error") {
-      log.textContent += "\n❌ Worker Error:\n" + msg.message;
-      runBtn.disabled = false;
-      return;
+    if (msg.type === "debug") {
+      log.textContent += `[DEBUG] ${msg.text}\n`;
     }
 
     if (msg.type === "progress") {
@@ -35,9 +32,21 @@ runBtn.onclick = () => {
       log.textContent += "\n" + msg.text;
     }
 
-    if (msg.type === "progress" && msg.current === msg.total) {
+    if (msg.type === "error") {
+      log.textContent += "\n❌ Worker Error:\n" + msg.message;
+      runBtn.disabled = false;
+    }
+
+    if (msg.type === "done") {
       log.textContent += "\n\n完了";
       runBtn.disabled = false;
     }
   };
+
+  worker.onerror = e => {
+    log.textContent += "\n❌ Worker 初期化失敗";
+    runBtn.disabled = false;
+  };
+
+  worker.postMessage({ games: 1000 });
 };
