@@ -1,3 +1,10 @@
+onerror = e => {
+  postMessage({
+    type: "error",
+    message: e.message + " @ " + e.filename + ":" + e.lineno
+  });
+};
+
 importScripts("engine.js", "ai.js");
 
 onmessage = e => {
