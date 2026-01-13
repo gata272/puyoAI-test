@@ -8,14 +8,12 @@ onmessage = e => {
     const c = simulateOneGame();
     maxChains.push(c);
 
-    // 進捗通知（10局ごと）
-    if ((i + 1) % 10 === 0 || i + 1 === games) {
+    // 進捗通知
       postMessage({
         type: "progress",
         current: i + 1,
         total: games
       });
-    }
   }
 
   const avg =
