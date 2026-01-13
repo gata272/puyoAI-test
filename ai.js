@@ -1,171 +1,153 @@
 (() => {
-  // Worker デバッグ（安全）
-  postMessage({ type: "debug", text: "ai.js loaded" });
+  // デバッグログ（Worker内で安全）
+  postMessage({ type: "debug", text: "ai.js loaded (LargeChain AI)" });
 
-  const WIDTH = 6;
-  const HEIGHT = 14;
-  const COLORS = [1, 2, 3, 4];
+  // 設定（チューニング可）
+  const ROLLOUTS = 12;            // 各候補でのランダムプレイアウト回数（多いほど精度↑、遅くなる）
+  const MAX_ROLLOUT_TURNS = 200;  // ロールアウト内の手数上限（ゲームが長くなり過ぎないように）
+  const TOP_K = 3;                // ロールアウト結果の上位k平均で候補評価（楽観的評価）
 
-  /* ================= 評価関数 ================= */
-
-  function evaluate(board) {
-    let score = 0;
-
-    const sim = simulateChain(board);
-    if (sim.chains === 1) return -1e9;
-    if (sim.chains >= 2) score += sim.chains * 200000;
-
-    score += verticalPotential(board);
-    score += stepPotential(board);
-    score += heightBalance(board);
-    score += unfinishedBonus(board);
-
-    if (isChoked(board)) score -= 1e8;
-
-    return score;
+  // ヘルパー: 深いクローン（boardは小さいので問題なし）
+  function cloneBoard(b) {
+    return b.map(row => row.slice());
   }
 
-  function verticalPotential(board) {
-    let s = 0;
-    for (let x = 0; x < WIDTH; x++) {
-      let streak = 1;
-      for (let y = 1; y < 12; y++) {
-        if (board[y][x] && board[y][x] === board[y - 1][x]) {
-          streak++;
-        } else {
-          if (streak === 3) s += 200000;
-          if (streak === 2) s += 20000;
-          if (streak >= 4) s -= 300000;
-          streak = 1;
+  // ヘルパー: その盤面に対して与えられた pair と (x,rot) を置き、成功なら true（board は変更される）
+  // ここでは engine.js の placePair(board, pair, move) を利用（mutate）
+  // ただし placePair は {x, rot} を期待するため合わせる
+  function tryPlaceOnClone(board, pair, x, rot) {
+    const b = cloneBoard(board);
+    const ok = placePair(b, pair, { x: x, rot: rot });
+    return ok ? b : null;
+  }
+
+  // 有効手を列挙（戻り値: [{x, rot, boardAfter}]）
+  function enumerateCandidates(board, pair) {
+    const list = [];
+    for (let x = 0; x < 6; x++) {
+      for (let rot = 0; rot < 4; rot++) {
+        const bAfter = tryPlaceOnClone(board, pair, x, rot);
+        if (bAfter) {
+          list.push({ x, rot, board: bAfter });
         }
       }
     }
-    return s;
+    return list;
   }
 
-  function stepPotential(board) {
-    let s = 0;
-    const h = columnHeights(board);
-    for (let i = 0; i < WIDTH - 1; i++) {
-      const d = Math.abs(h[i] - h[i + 1]);
-      if (d === 1 || d === 2) s += 30000;
-      if (d === 0) s -= 20000;
-      if (d >= 4) s -= 30000;
+  // ロールアウト：与えられた盤面からランダムに継続プレイして「そのロールアウト中に得られた最大連鎖数」を返す
+  function rolloutMaxChain(startBoard) {
+    const b = cloneBoard(startBoard);
+    let maxChainSeen = 0;
+    // 手数制限を置く（ロールアウト内での長時間停止防止）
+    for (let turn = 0; turn < MAX_ROLLOUT_TURNS; turn++) {
+      // ランダムツモ
+      const pair = randomPair(); // engine.js 提供
+      // 列挙してランダムに1手選ぶ（ランダムポリシー）
+      const moves = [];
+      for (let x = 0; x < 6; x++) for (let rot = 0; rot < 4; rot++) {
+        const tmp = tryPlaceOnClone(b, pair, x, rot);
+        if (tmp) moves.push({ x, rot, board: tmp });
+      }
+      if (moves.length === 0) break; // 置けない＝ゲームオーバー
+      // 選択：ランダムに選ぶ（均一）
+      const sel = moves[Math.floor(Math.random() * moves.length)];
+      // apply move into real b (mutate)
+      const applied = placePair(b, pair, { x: sel.x, rot: sel.rot });
+      if (!applied) break; // 安全策
+      // 連鎖判定（simulateChain は engine.js にある、戻り値は数値またはオブジェクト）
+      const chains = (function() {
+        const res = simulateChain(b);
+        // engine.simulateChain 版は数値を返す実装もあるため安全に扱う
+        if (typeof res === "number") return res;
+        if (res && typeof res.chains === "number") return res.chains;
+        return 0;
+      })();
+      if (chains > maxChainSeen) maxChainSeen = chains;
+      // ゲームオーバー判定（engine 側と一致する条件）
+      // engine uses board[12][2] !== 0 for over; height might be 13 -> index 12 is top visible
+      if (b[12] && b[12][2] !== 0) break;
     }
-    return s;
+    return maxChainSeen;
   }
 
-  function heightBalance(board) {
-    const h = columnHeights(board);
-    const avg = h.reduce((a, b) => a + b, 0) / WIDTH;
-    let v = 0;
-    h.forEach(x => (v += Math.abs(x - avg)));
-    return -v * 1000;
+  // 候補の期待評価（上位 K の平均を返す — 大連鎖狙いで楽観的）
+  function evaluateCandidateByRollouts(boardAfter, rollouts = ROLLOUTS) {
+    const results = [];
+    for (let r = 0; r < rollouts; r++) {
+      const m = rolloutMaxChain(boardAfter);
+      results.push(m);
+    }
+    results.sort((a,b)=>b-a); // 降順
+    // 平均をとるが上位 TOP_K を使う（楽観評価）
+    const use = Math.min(TOP_K, results.length);
+    if (use === 0) return 0;
+    const top = results.slice(0, use);
+    const avg = top.reduce((s,v)=>s+v,0)/use;
+    return avg;
   }
 
-  function unfinishedBonus(board) {
-    let s = 0;
-    const visited = Array.from({ length: 12 }, () =>
-      Array(WIDTH).fill(false)
-    );
-    for (let y = 0; y < 12; y++) {
-      for (let x = 0; x < WIDTH; x++) {
-        if (!visited[y][x] && board[y][x]) {
-          let g = [];
-          dfs(board, x, y, visited, g);
-          if (g.length === 3) s += 100000;
-          if (g.length === 4) s -= 500000;
-        }
+  // メイン公開関数
+  // board: 盤面配列（engine.js の形式） , pair: [mainColor, subColor] （randomPair と同形式）
+  // 戻り値: { x, rot } のフォーマット（simulateOneGame の placePair と整合）
+  function getBestMove(board, pair) {
+    // 1) 候補列挙（初手）
+    const candidates = enumerateCandidates(board, pair);
+    if (candidates.length === 0) {
+      // 置けない（ゲームオーバー）…安全なダミー
+      return { x: 2, rot: 0 };
+    }
+
+    // 2) すぐに連鎖が発生する候補は超優先（即発火の可能性を無視しない）
+    for (const c of candidates) {
+      // simulate immediate chain
+      const chains = (function() {
+        const res = simulateChain(cloneBoard(c.board));
+        if (typeof res === "number") return res;
+        if (res && typeof res.chains === "number") return res.chains;
+        return 0;
+      })();
+      if (chains >= 8) {
+        // 既に大連鎖が起きるなら即選択（ショートカット）
+        return { x: c.x, rot: c.rot };
       }
     }
-    return s;
-  }
 
-  function isChoked(board) {
-    let h = 0;
-    while (h < HEIGHT && board[h][2] !== 0) h++;
-    return h >= 11;
-  }
+    // 3) 各候補をロールアウトで評価（並列にはしていないが十分）
+    let bestScore = -Infinity;
+    let bestMove = { x: candidates[0].x, rot: candidates[0].rot };
 
-  function getBestMove(board, next) {
-    let best = -Infinity;
-    let bestMove = { x: 2, rotation: 0 };
-
-    for (let x = 0; x < WIDTH; x++) {
-      for (let r = 0; r < 4; r++) {
-        const b = applyMove(board, next[0], next[1], x, r);
-        if (!b) continue;
-
-        let worst = Infinity;
-        for (let c1 of COLORS)
-          for (let c2 of COLORS) {
-            const b2 = applyMove(b, c1, c2, x, r);
-            if (!b2) continue;
-            worst = Math.min(worst, evaluate(b2));
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      // evaluate by rollouts
+      const score = evaluateCandidateByRollouts(c.board, ROLLOUTS);
+      // tie-breaker: 高さの分散や縦3の数を軽く考慮（補正）
+      const bonus = (function(){
+        // count vertical 3s in boardAfter
+        let v3 = 0;
+        for (let col=0; col<6; col++){
+          let streak=1;
+          for (let y=1;y<12;y++){
+            if (c.board[y][col] && c.board[y][col] === c.board[y-1][col]) streak++;
+            else {
+              if (streak===3) v3++;
+              streak=1;
+            }
           }
-
-        if (worst > best) {
-          best = worst;
-          bestMove = { x, rotation: r };
         }
+        return v3 * 0.5; // small bonus
+      })();
+
+      const totalScore = score + bonus;
+      if (totalScore > bestScore) {
+        bestScore = totalScore;
+        bestMove = { x: c.x, rot: c.rot };
       }
     }
+
     return bestMove;
   }
 
-  /* === 内部処理（engine.js の関数を利用） === */
-
-  function applyMove(board, p1, p2, x, r) {
-    const b = board.map(row => [...row]);
-    let pos = [];
-
-    if (r === 0) pos = [[x, 1, p1], [x, 0, p2]];
-    if (r === 1) pos = [[x, 0, p1], [x + 1, 0, p2]];
-    if (r === 2) pos = [[x, 0, p2], [x, 1, p1]];
-    if (r === 3) pos = [[x, 0, p1], [x - 1, 0, p2]];
-
-    for (let [px] of pos)
-      if (px < 0 || px >= WIDTH) return null;
-
-    for (let [px, , c] of pos) {
-      let y = 0;
-      while (y < HEIGHT && b[y][px]) y++;
-      if (y >= 12) return null;
-      b[y][px] = c;
-    }
-    return b;
-  }
-
-  function dfs(b, x, y, v, g) {
-    const c = b[y][x];
-    const st = [[x, y]];
-    v[y][x] = true;
-    while (st.length) {
-      const [cx, cy] = st.pop();
-      g.push({ x: cx, y: cy });
-      [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx, dy]) => {
-        const nx = cx + dx, ny = cy + dy;
-        if (
-          nx >= 0 && nx < WIDTH &&
-          ny >= 0 && ny < 12 &&
-          !v[ny][nx] &&
-          b[ny][nx] === c
-        ) {
-          v[ny][nx] = true;
-          st.push([nx, ny]);
-        }
-      });
-    }
-  }
-
-  function columnHeights(b) {
-    return [...Array(WIDTH)].map((_, x) => {
-      let y = 0;
-      while (y < HEIGHT && b[y][x]) y++;
-      return y;
-    });
-  }
-
-  // Worker へ公開
+  // エクスポート
   self.PuyoAI = { getBestMove };
 })();
